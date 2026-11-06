@@ -79,4 +79,12 @@ assert agy[agy.index("--model") + 1] == "m"
 assert "EXTRA" in hub.command_for("gemini", {"write": False}, False, "dir/report.md", None, ["EXTRA"])
 assert "--conversation" in hub.command_for("gemini", read_task, True, "dir/report.md")
 assert "--model" not in hub.command_for("gemini", {"write": False}, False, "dir/report.md")
+import sys
+with tempfile.TemporaryDirectory() as folder:
+    out, err = Path(folder, "o"), Path(folder, "e")
+    silent = [sys.executable, "-c", "import time; time.sleep(30)"]
+    assert hub.execute(silent, "", folder, out, err, 60, startup=2) == "no_start"
+    assert hub.execute(silent, "", folder, out, err, 2) == "timeout"
+    talks = [sys.executable, "-c", "import sys, time; print(sys.stdin.read(), flush=True); time.sleep(3)"]
+    assert hub.execute(talks, "hello", folder, out, err, 60, startup=2) == 0 and "hello" in out.read_text()
 print("ok")

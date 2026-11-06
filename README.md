@@ -90,7 +90,7 @@ Optional. Without a config, the hub uses the current git repository and each CLI
 
 | Key | Meaning |
 |---|---|
-| `repo` | Project path. Default: the current git repository |
+| `repo` | Project path used only when the hub runs outside a git repository |
 | `project_name` | Shown to the agents |
 | `rules_file` | Rules added to every task. Default: `AGENTS.md` |
 | `memory` | Folder with a `MEMORY.md` index the agents may read |

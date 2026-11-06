@@ -19,6 +19,7 @@ from pathlib import Path
 HOME = Path(os.environ.get("AGENT_HUB_HOME", Path.home() / ".agent-hub"))
 MIN_FREE_BYTES = 2 * 1024 ** 3   # refuse a new workspace when the disk is nearly full
 KEEP_TASKS = 100
+CODEX_STARTUP = 180              # seconds Codex may stay silent at start before the hub calls it stuck
 REPORT_CHARS = 6000              # the most Claude reads back by default
 # Per-run settings: outside the hub, the user's own agy sessions keep their normal permissions.
 # Gemini may read the whole project, including git-ignored folders, so common secrets stay closed.
@@ -82,12 +83,13 @@ def git(*args, cwd=None, check=True):
 
 
 def repo_root():
+    """The git repository the hub is started from; the configured repo only when outside one."""
+    done = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True)
+    if done.returncode == 0:
+        return Path(done.stdout.strip())
     if CONFIG.get("repo"):
         return Path(CONFIG["repo"])
-    done = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True)
-    if done.returncode:
-        fail('not inside a git repository; run from one, or set "repo" in the config')
-    return Path(done.stdout.strip())
+    fail('not inside a git repository; run from one, or set "repo" in the config')
 
 
 def workspace_path(agent):
@@ -299,21 +301,34 @@ def command_for(agent, task, resumed, report, memory=None, read_dirs=()):
     return command
 
 
-def execute(command, prompt, cwd, stdout_path, stderr_path, timeout):
+def stop_tree(process):
+    # Agents start children of their own, so stop the whole tree.
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(process.pid)], capture_output=True)
+    else:
+        os.killpg(process.pid, signal.SIGKILL)
+    process.wait()
+
+
+def execute(command, prompt, cwd, stdout_path, stderr_path, timeout, startup=None):
+    """Returns the exit code, "timeout", or "no_start" when nothing was written within `startup` seconds."""
+    start_size = stdout_path.stat().st_size if stdout_path.exists() else 0
     with open(stdout_path, "ab") as out, open(stderr_path, "ab") as err:
         process = subprocess.Popen(command, cwd=cwd, stdin=subprocess.PIPE, stdout=out, stderr=err,
                                    env=agent_env(), start_new_session=os.name != "nt")
-        try:
-            process.communicate(prompt.encode("utf-8"), timeout=timeout)
-            return process.returncode
-        except subprocess.TimeoutExpired:
-            # Agents start children of their own, so stop the whole tree.
-            if os.name == "nt":
-                subprocess.run(["taskkill", "/T", "/F", "/PID", str(process.pid)], capture_output=True)
-            else:
-                os.killpg(process.pid, signal.SIGKILL)
-            process.wait()
-            return None
+        process.stdin.write(prompt.encode("utf-8"))
+        process.stdin.close()
+        started = time.time()
+        while process.poll() is None:
+            waited = time.time() - started
+            if startup and waited > startup and stdout_path.stat().st_size == start_size:
+                stop_tree(process)
+                return "no_start"
+            if waited > timeout:
+                stop_tree(process)
+                return "timeout"
+            time.sleep(1)
+        return process.returncode
 
 
 def save(task_dir, task):
@@ -419,7 +434,9 @@ def run(args):
     elif CONFIG.get("codex", {}).get("deny_reads"):
         task["codex_profile"] = codex_profile(workspace, task["write"], secrets)
     code = execute(command_for(agent, task, resumed, report, memory, read_dirs),
-                   prompt if agent == "codex" else "", workspace, stdout_path, stderr_path, args.timeout)
+                   prompt if agent == "codex" else "", workspace, stdout_path, stderr_path, args.timeout,
+                   # Codex streams events from its first second; agy prints only at the end.
+                   startup=CODEX_STARTUP if agent == "codex" else None)
     task["seconds"] = round(time.time() - started)
     stdout = stdout_path.read_bytes()[offset:].decode("utf-8", "replace")
     stderr = read_text(stderr_path)[-2000:]
@@ -432,8 +449,11 @@ def run(args):
         session, response, error = gemini_result(stdout)
         task["session"] = session or task.get("session")
         report.write_text(response, encoding="utf-8")
-    if code is None:
+    if code == "timeout":
         task["status"], task["error"] = "timeout", f"stopped after {args.timeout}s"
+    elif code == "no_start":
+        task["status"], task["error"] = "failed", (f"Codex wrote nothing in {CODEX_STARTUP}s, so it was stopped; "
+                                                   "this has happened once at sandbox start, so retry once")
     else:
         task["status"] = "failed" if error and code == 0 else classify(code, f"{stdout[-2000:]} {stderr} {error}")
         if task["status"] != "completed":
