@@ -25,10 +25,16 @@ REPORT_CHARS = 6000              # the most Claude reads back by default
 # agy ignores regex in read_file rules, so the hub finds these files itself and denies exact paths.
 GEMINI_DENY = ["write_file(*)", "command(*)"]
 SECRET_FILE = re.compile(
-    r"(^|/)(\.env[^/]*|id_(rsa|dsa|ecdsa|ed25519)[^/]*|auth\.json|credentials|wp-config\.php|db(_pdo)?\.php"
+    r"(^|/)([^/]*\.env(\.[^/]*)?|id_(rsa|dsa|ecdsa|ed25519)[^/]*|auth\.json|credentials|wp-config\.php|db(_pdo)?\.php"
     r"|[^/]*\.(pem|key|pfx|p12)"
-    r"|[^/]*(password|passwd|secret|credential|token)[^/]*\.(txt|json|ini|ya?ml|env|cfg|conf))$", re.I)
-NOT_SECRET_DIR = re.compile(r"(^|/)(node_modules|site-packages|vendor|\.venv|venv)/", re.I)
+    r"|([^/]*[._-])?(password|passwd|secrets?|credentials?|tokens?)([._-][^/]*)?\.(txt|json|ini|ya?ml|cfg|conf))$", re.I)
+NOT_SECRET_DIR = re.compile(r"(^|/)(node_modules|site-packages|vendor|\.?venv[^/]*)/", re.I)
+# Secrets in files with ordinary names: config files are scanned for a value next to a secret key.
+CONFIG_FILE = re.compile(r"\.(ini|conf|cfg|config|env|json|ya?ml|xml|properties|toml)$", re.I)
+SECRET_VALUE = re.compile(
+    rb"-----BEGIN [A-Z ]*PRIVATE KEY-----|(?i:(?:password|passwd|pwd|api[_-]?key|client[_-]?secret|secret[_-]?key"
+    rb"|access[_-]?token|auth[_-]?token)[\"']?\s*[:=]\s*[\"']?)[^\s\"'$<{%;,]{6,}")
+MAX_SCAN_BYTES = 256 * 1024
 QUOTA = re.compile(r"usage limit|rate.?limit|quota|resource_exhausted|too many requests|\b429\b", re.I)
 SHELL_BLOCKED = re.compile(r"CreateProcess\w* failed|Failed to create unified exec")
 
@@ -151,6 +157,9 @@ def build_prompt(task_id, agent, write, workspace, commit, brief, config, rules,
     project = config.get("project_name")
     original = f"\nOriginal project, including git-ignored folders, read-only: {config['root']}" if config.get("root") else ""
     limits = "\n".join(f"- {limit}" for limit in [*config.get("limits", []), *BASE_LIMITS])
+    if config.get("secrets"):
+        limits += "\n- Never open, search or print these secret files:\n" + "\n".join(
+            f"  - {path}" for path in config["secrets"])
     sections = ""
     if rules:
         sections += f"\n## Project rules\n{rules}\n"
@@ -219,7 +228,23 @@ def prepare_workspace(agent, ref, branch):
 def secret_files(root, names):
     """Paths under root that look like secrets. names: repo-relative paths with forward slashes."""
     return [f"{Path(root).as_posix()}/{name}" for name in names
-            if SECRET_FILE.search(name) and not NOT_SECRET_DIR.search(name)]
+            if name and not NOT_SECRET_DIR.search(name) and (SECRET_FILE.search(name) or holds_secret(root, name))]
+
+
+def holds_secret(root, name):
+    if not CONFIG_FILE.search(name):
+        return False
+    try:
+        path = Path(root) / name
+        return path.stat().st_size <= MAX_SCAN_BYTES and bool(SECRET_VALUE.search(path.read_bytes()))
+    except OSError:
+        return False
+
+
+def touched_secrets(secrets, log):
+    """Codex read-only can read the whole disk here, so report it if a secret path shows up in its log."""
+    text = log.replace("\\\\", "/").replace("\\", "/").lower()
+    return [path for path in secrets if path.lower() in text]
 
 
 def gemini_settings(allow_dirs, secrets, extra_deny):
@@ -314,6 +339,8 @@ def print_task(task, task_dir, full=False):
         print(f"branch {task['branch']}\n{task.get('diffstat') or 'no file changes'}")
     if task.get("error"):
         print(f"error: {task['error']}")
+    if task.get("secrets_touched"):
+        print(f"WARNING: the agent's log names secret files: {', '.join(task['secrets_touched'])}")
     print(report if full or len(report) <= REPORT_CHARS else
           report[:REPORT_CHARS] + f"\n[cut, full report: {task_dir / 'report.md'}]")
 
@@ -358,7 +385,10 @@ def run(args):
 
     root = repo_root()
     memory = Path(CONFIG["memory"]) if CONFIG.get("memory") else None
-    prompt = build_prompt(task["id"], agent, task["write"], workspace, task["base_commit"], brief, {**CONFIG, "root": root},
+    # -c tracked, -o untracked and git-ignored: the secrets most worth hiding are usually ignored.
+    secrets = secret_files(root, git("ls-files", "-c", "-o", "-z", cwd=root).split("\0"))
+    prompt = build_prompt(task["id"], agent, task["write"], workspace, task["base_commit"], brief,
+                          {**CONFIG, "root": root, "secrets": secrets},
                           read_text(root / CONFIG.get("rules_file", "AGENTS.md")),
                           read_text(memory / "MEMORY.md") if memory else "", resumed)
     (task_dir / "prompt.md").write_text(prompt, encoding="utf-8")
@@ -372,9 +402,7 @@ def run(args):
     offset = stdout_path.stat().st_size if stdout_path.exists() else 0
     read_dirs = [root, *CONFIG.get("read_dirs", [])]
     if agent == "gemini":
-        # -c tracked, -o untracked and git-ignored: the secrets most worth hiding are usually ignored.
-        names = git("ls-files", "-c", "-o", "-z", cwd=root).split("\0")
-        settings = gemini_settings([task_dir, memory, *read_dirs], secret_files(root, names), task.get("gemini_deny", []))
+        settings = gemini_settings([task_dir, memory, *read_dirs], secrets, task.get("gemini_deny", []))
         (task_dir / "agy-settings.json").write_text(json.dumps(settings, indent=1), encoding="utf-8")
     code = execute(command_for(agent, task, resumed, report, memory, read_dirs),
                    prompt if agent == "codex" else "", workspace, stdout_path, stderr_path, args.timeout)
@@ -385,6 +413,7 @@ def run(args):
     error = None
     if agent == "codex":
         task["session"] = task.get("session") or codex_session(stdout)
+        task["secrets_touched"] = touched_secrets(secrets, stdout)
     else:
         session, response, error = gemini_result(stdout)
         task["session"] = session or task.get("session")

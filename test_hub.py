@@ -1,4 +1,7 @@
 """Checks for the parts of hub.py that decide task outcomes. Run: python test_hub.py"""
+import tempfile
+from pathlib import Path
+
 import hub
 
 assert hub.codex_session('noise\n{"type":"thread.started","thread_id":"abc"}\n') == "abc"
@@ -41,11 +44,26 @@ hub.agy_path = lambda: "agy"
 agy = hub.command_for("gemini", {**read_task, "session": None}, False, "dir/report.md", "MEM")
 assert "--mode" not in agy and "--conversation" not in agy and "MEM" in agy
 assert agy[agy.index("--settings") + 1].endswith("agy-settings.json")
-names = ["src/app.py", "web/db.php", "bot/.env", "bot/.env.local", "keys/server.pem", "docs/SA_PASSWORD.txt",
-         "ssh/id_rsa", "bot/.venv/lib/token.py", "node_modules/x/secret.json", "a/secret_quests.py", "web/app.key"]
+names = ["src/app.py", "web/db.php", "bot/.env", "bot/.env.local", "tools/op.local.env", "keys/server.pem",
+         "docs/SA_PASSWORD.txt", "ssh/id_rsa", "bot/.venv/lib/token.py", "node_modules/x/secret.json",
+         "a/secret_quests.py", "data/SecretQuests.ini", "web/csrf_token.php", "web/app.key", "client_secret.json", ""]
 found = hub.secret_files("C:/p", names)
-assert found == ["C:/p/web/db.php", "C:/p/bot/.env", "C:/p/bot/.env.local", "C:/p/keys/server.pem",
-                 "C:/p/docs/SA_PASSWORD.txt", "C:/p/ssh/id_rsa", "C:/p/web/app.key"], found
+assert found == ["C:/p/web/db.php", "C:/p/bot/.env", "C:/p/bot/.env.local", "C:/p/tools/op.local.env",
+                 "C:/p/keys/server.pem", "C:/p/docs/SA_PASSWORD.txt", "C:/p/ssh/id_rsa", "C:/p/web/app.key",
+                 "C:/p/client_secret.json"], found
+
+with tempfile.TemporaryDirectory() as folder:
+    Path(folder, "app.ini").write_text("[db]\nPassword=hunter2hunter\n", encoding="utf-8")
+    Path(folder, "plain.ini").write_text("[db]\nPassword=$SECRET\nName=game\n", encoding="utf-8")
+    Path(folder, "code.py").write_text("password = 'hunter2hunter'\n", encoding="utf-8")
+    assert hub.holds_secret(folder, "app.ini")
+    assert not hub.holds_secret(folder, "plain.ini")
+    assert not hub.holds_secret(folder, "code.py")
+    assert not hub.holds_secret(folder, "missing.ini")
+
+log = r'{"command":"Get-Content C:\\P\\bot\\.env"}'
+assert hub.touched_secrets(["C:/p/bot/.env", "C:/p/other.pem"], log) == ["C:/p/bot/.env"]
+assert "Never open" in hub.build_prompt("t", "codex", False, "W", "c", "B", {"secrets": ["S"]}, "", "", False)
 rules = hub.gemini_settings(["MEM", None], found[:1], ["read_file(X/)"])["permissions"]
 assert rules["allow"] == ["read_file(MEM/)"]
 assert rules["deny"] == ["write_file(*)", "command(*)", "read_file(C:/p/web/db.php)", "read_file(X/)"]
