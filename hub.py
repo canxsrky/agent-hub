@@ -23,6 +23,7 @@ REPORT_CHARS = 6000              # the most Claude reads back by default
 # Per-run settings: outside the hub, the user's own agy sessions keep their normal permissions.
 GEMINI_READ_ONLY = json.dumps({"permissions": {"deny": ["write_file(*)", "command(*)"]}})
 QUOTA = re.compile(r"usage limit|rate.?limit|quota|resource_exhausted|too many requests|\b429\b", re.I)
+SHELL_BLOCKED = re.compile(r"CreateProcess\w* failed|Failed to create unified exec")
 
 BASE_LIMITS = [
     "Stay inside this workspace. Outside it you may only read the memory folder, if one is given.",
@@ -93,6 +94,16 @@ def classify(returncode, text):
     return "quota" if QUOTA.search(text) else "failed"
 
 
+def agent_env():
+    """Codex's Windows sandbox cannot start the Microsoft Store pwsh alias (CreateProcessAsUserW
+    error 5), so hide it. Codex then falls back to another PowerShell."""
+    env = dict(os.environ)
+    if os.name == "nt":
+        env["PATH"] = os.pathsep.join(
+            p for p in env.get("PATH", "").split(os.pathsep) if "windowsapps" not in p.lower())
+    return env
+
+
 def codex_session(events):
     for line in events.splitlines():
         try:
@@ -118,7 +129,11 @@ def gemini_result(stdout):
         error = error.get("message") or json.dumps(error)
     if not error and data.get("status", "SUCCESS") != "SUCCESS":
         error = f"agy ended with status {data['status']}"
-    return data.get("conversation_id"), data.get("response") or "", error
+    response = data.get("response") or ""
+    if not error and not response.strip():
+        denied = ", ".join(item.get("action", "?") for item in data.get("denied_actions", []))
+        error = f"agy returned no report{f'; denied: {denied}' if denied else ''}"
+    return data.get("conversation_id"), response, error
 
 
 def build_prompt(task_id, agent, write, workspace, commit, brief, config, rules, memory_index, resumed):
@@ -193,7 +208,7 @@ def prepare_workspace(agent, ref, branch):
     return workspace
 
 
-def command_for(agent, task, resumed, report, memory=None):
+def command_for(agent, task, resumed, report, memory=None, read_dirs=()):
     model, effort = task.get("model"), task.get("effort")
     if agent == "codex":
         settings = ["--json", "-o", str(report), "-c", "notify=[]"]
@@ -213,8 +228,9 @@ def command_for(agent, task, resumed, report, memory=None):
     command = [agy_path(), "-p", f"Read the file {prompt_file} in full and carry out the task in it.",
                "--mode", "plan", "--settings", GEMINI_READ_ONLY, "--output-format", "json",
                "--add-dir", str(prompt_file.parent)]
-    if memory:
-        command += ["--add-dir", str(memory)]
+    for folder in [memory, *read_dirs]:
+        if folder:
+            command += ["--add-dir", str(folder)]
     if model:
         command += ["--model", model]
     if effort:
@@ -227,7 +243,7 @@ def command_for(agent, task, resumed, report, memory=None):
 def execute(command, prompt, cwd, stdout_path, stderr_path, timeout):
     with open(stdout_path, "ab") as out, open(stderr_path, "ab") as err:
         process = subprocess.Popen(command, cwd=cwd, stdin=subprocess.PIPE, stdout=out, stderr=err,
-                                   start_new_session=os.name != "nt")
+                                   env=agent_env(), start_new_session=os.name != "nt")
         try:
             process.communicate(prompt.encode("utf-8"), timeout=timeout)
             return process.returncode
@@ -331,8 +347,8 @@ def run(args):
 
     started = time.time()
     offset = stdout_path.stat().st_size if stdout_path.exists() else 0
-    code = execute(command_for(agent, task, resumed, report, memory), prompt if agent == "codex" else "",
-                   workspace, stdout_path, stderr_path, args.timeout)
+    code = execute(command_for(agent, task, resumed, report, memory, CONFIG.get("read_dirs", [])),
+                   prompt if agent == "codex" else "", workspace, stdout_path, stderr_path, args.timeout)
     task["seconds"] = round(time.time() - started)
     stdout = stdout_path.read_bytes()[offset:].decode("utf-8", "replace")
     stderr = read_text(stderr_path)[-2000:]
@@ -350,6 +366,12 @@ def run(args):
         task["status"] = "failed" if error and code == 0 else classify(code, f"{stdout[-2000:]} {stderr} {error}")
         if task["status"] != "completed":
             task["error"] = (error or stderr or stdout[-500:]).strip()[-500:]
+        elif SHELL_BLOCKED.search(stderr):
+            task["status"], task["error"] = "failed", "the agent's shell could not start, so it checked nothing"
+        elif "## Result" not in read_text(report):
+            denied = "; agy stops at the first denied action, check the paths in the brief" \
+                if agent == "gemini" and '"denied_actions"' in stdout else ""
+            task["status"], task["error"] = "failed", f"the agent did not finish its report{denied}"
     if task["write"]:
         collect_changes(workspace, task, task_dir)
     elif git("status", "--porcelain", cwd=workspace):

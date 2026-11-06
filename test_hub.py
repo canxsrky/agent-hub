@@ -8,6 +8,10 @@ assert hub.gemini_result('log line\n{"conversation_id":"s","status":"SUCCESS","r
 assert hub.gemini_result('{"conversation_id":"s","error":{"message":"bad"}}') == ("s", "", "bad")
 assert hub.gemini_result('{"conversation_id":"s","status":"ERROR","error":"bad"}') == ("s", "", "bad")
 assert hub.gemini_result('{"conversation_id":"s","status":"WAITING","response":"x"}')[2] == "agy ended with status WAITING"
+empty = '{"conversation_id":"s","status":"SUCCESS","response":"","denied_actions":[{"action":"read_file"}]}'
+assert hub.gemini_result(empty)[2] == "agy returned no report; denied: read_file"
+assert hub.SHELL_BLOCKED.search("Failed to create unified exec process: CreateProcessAsUserW failed: 5")
+assert not hub.SHELL_BLOCKED.search("ordinary log line")
 assert hub.gemini_result("") == (None, "", "no output")
 assert hub.gemini_result("not json") == (None, "", "not json")
 
@@ -37,6 +41,7 @@ hub.agy_path = lambda: "agy"
 agy = hub.command_for("gemini", {**read_task, "session": None}, False, "dir/report.md", "MEM")
 assert "plan" in agy and hub.GEMINI_READ_ONLY in agy and "--conversation" not in agy and "MEM" in agy
 assert agy[agy.index("--model") + 1] == "m"
+assert "EXTRA" in hub.command_for("gemini", {"write": False}, False, "dir/report.md", None, ["EXTRA"])
 assert "--conversation" in hub.command_for("gemini", read_task, True, "dir/report.md")
 assert "--model" not in hub.command_for("gemini", {"write": False}, False, "dir/report.md")
 print("ok")

@@ -94,6 +94,7 @@ Optional. Without a config, the hub uses the current git repository and each CLI
 | `project_name` | Shown to the agents |
 | `rules_file` | Rules added to every task. Default: `AGENTS.md` |
 | `memory` | Folder with a `MEMORY.md` index the agents may read |
+| `read_dirs` | Extra folders Gemini may read, such as git-ignored ones |
 | `limits` | Extra hard limits for your project |
 | `codex.model`, `codex.effort`, `codex.config` | Codex defaults. `config` holds `-c` overrides |
 | `gemini.model`, `gemini.effort` | `agy` defaults. List models with `agy models` |
@@ -122,7 +123,7 @@ Agents see committed code only, so commit first or pass `--base <branch>`. Each 
 | Codex | `--write` | Codex `workspace-write` sandbox. Results land on an `agent/codex/<task>` branch for review |
 | Gemini | always | `agy` plan mode, with write and command tools denied for that run |
 
-**What we tested:** Codex could not write in read-only mode, and could not write outside its workspace in `--write` mode. Gemini could not create files or run commands.
+**What we tested:** Codex shell commands could not write in read-only mode, and could not write outside the workspace in `--write` mode. Gemini could not create files or run commands, and a read outside its allowed folders was refused. A refused action ends a Gemini run, and the hub then reports the task as failed.
 
 **What we did not test:** Codex can still run commands that read, and its sandbox was not tested against services, databases or network access. The `limits` setting is an instruction to the agent, not enforcement. On a machine that matters, keep reviewing the results.
 
@@ -134,6 +135,8 @@ Agents see committed code only, so commit first or pass `--base <branch>`. Each 
 |---|---|
 | Tested on | Windows Server 2025, Codex CLI 0.163, `agy` 1.5.1 |
 | Not yet run | macOS and Linux. The code paths exist, and reports are welcome |
+
+On Windows, Codex's sandbox cannot start the Microsoft Store build of PowerShell, so the hub hides it from Codex. Codex then uses another PowerShell.
 
 These CLIs change their flags often, so a newer version may need a small fix. Run `python test_hub.py` after you update, and open an issue if a real task fails.
 

@@ -32,6 +32,8 @@ python "$H" show <task>                   # full report
 
 - Each agent has one workspace, so one task per agent at a time. A second task stops with "busy".
 - The workspace holds committed code only. Commit the work first, or pass `--base <branch>`. The default is HEAD; uncommitted changes and other branches are not there unless named.
+- Gemini can read only its workspace, the memory folder and `read_dirs` from the config. One read outside those ends its run, so check the paths in the brief. Codex read-only can read the whole disk.
+- Do not write a task off as done on a thin report. The hub marks a task `failed` when the agent's shell could not start or its report is unfinished; then fix the cause or do the job yourself.
 - Project rules, the memory index and the report format are added automatically. The brief needs only the goal, the paths, and what done means.
 - Files: `~/.agent-hub/tasks/<task>/` holds `report.md`, `prompt.md`, `events.jsonl`, `stderr.log`, `diff.patch`.
 
