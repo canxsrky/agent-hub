@@ -1,0 +1,17 @@
+{
+  "repo": "/path/to/your/project",
+  "project_name": "My Project",
+  "rules_file": "AGENTS.md",
+  "memory": "/path/to/memory/folder",
+  "limits": [
+    "Never touch the production database."
+  ],
+  "codex": {
+    "model": "your-codex-model",
+    "effort": "high",
+    "config": []
+  },
+  "gemini": {
+    "model": "your-agy-model"
+  }
+}
