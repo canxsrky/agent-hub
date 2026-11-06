@@ -3,7 +3,6 @@
   "project_name": "My Project",
   "rules_file": "AGENTS.md",
   "memory": "/path/to/memory/folder",
-  "read_dirs": ["/path/to/git-ignored/folder"],
   "limits": [
     "Never touch the production database."
   ],

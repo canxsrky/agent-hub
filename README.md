@@ -94,10 +94,11 @@ Optional. Without a config, the hub uses the current git repository and each CLI
 | `project_name` | Shown to the agents |
 | `rules_file` | Rules added to every task. Default: `AGENTS.md` |
 | `memory` | Folder with a `MEMORY.md` index the agents may read |
-| `read_dirs` | Extra folders Gemini may read, such as git-ignored ones |
+| `read_dirs` | Extra folders outside the project that Gemini may read |
 | `limits` | Extra hard limits for your project |
 | `codex.model`, `codex.effort`, `codex.config` | Codex defaults. `config` holds `-c` overrides |
 | `gemini.model`, `gemini.effort` | `agy` defaults. List models with `agy models` |
+| `gemini.deny` | Extra `agy` rules, such as `read_file(/path/to/private/)` |
 
 The model is chosen in this order: `--model` on the task, then the config, then the CLI's own default.
 
@@ -121,11 +122,13 @@ Agents see committed code only, so commit first or pass `--base <branch>`. Each 
 |---|---|---|
 | Codex | default | Codex `read-only` sandbox |
 | Codex | `--write` | Codex `workspace-write` sandbox. Results land on an `agent/codex/<task>` branch for review |
-| Gemini | always | `agy` plan mode, with write and command tools denied for that run |
+| Gemini | always | `agy` deny rules for writes, commands and secret files, set for that run only |
 
-**What we tested:** Codex shell commands could not write in read-only mode, and could not write outside the workspace in `--write` mode. Gemini could not create files or run commands, and a read outside its allowed folders was refused. A refused action ends a Gemini run, and the hub then reports the task as failed.
+**Secrets:** Gemini can read your whole project, including git-ignored folders, so you never have to list them. Before each task the hub finds files that look like secrets (`.env`, keys, certificates, `id_rsa`, `db.php`, and names with password, secret, credential or token) and blocks each one by exact path. A secret with an ordinary file name is not detected, so add it to `gemini.deny`.
 
-**What we did not test:** Codex can still run commands that read, and its sandbox was not tested against services, databases or network access. The `limits` setting is an instruction to the agent, not enforcement. On a machine that matters, keep reviewing the results.
+**What we tested:** Codex shell commands could not write in read-only mode, and could not write outside the workspace in `--write` mode. Gemini could not create files or run commands, and could not read decoy `.env`, `.pem` and password files while it could read an ordinary file next to them.
+
+**What we did not test:** Whether Gemini's search tools respect the secret block; our one attempt was inconclusive. Codex read-only can read the whole disk, including secrets, and its sandbox was not tested against services, databases or network access. The `limits` setting is an instruction to the agent, not enforcement. On a machine that matters, keep reviewing the results.
 
 **Your code goes to these providers.** Check their data terms before you send private code. `agy` can collect interaction data unless you turn it off in `/config`.
 

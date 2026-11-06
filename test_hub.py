@@ -39,7 +39,16 @@ assert "-m" not in hub.command_for("codex", {"write": False}, False, "r")
 
 hub.agy_path = lambda: "agy"
 agy = hub.command_for("gemini", {**read_task, "session": None}, False, "dir/report.md", "MEM")
-assert "plan" in agy and hub.GEMINI_READ_ONLY in agy and "--conversation" not in agy and "MEM" in agy
+assert "--mode" not in agy and "--conversation" not in agy and "MEM" in agy
+assert agy[agy.index("--settings") + 1].endswith("agy-settings.json")
+names = ["src/app.py", "web/db.php", "bot/.env", "bot/.env.local", "keys/server.pem", "docs/SA_PASSWORD.txt",
+         "ssh/id_rsa", "bot/.venv/lib/token.py", "node_modules/x/secret.json", "a/secret_quests.py", "web/app.key"]
+found = hub.secret_files("C:/p", names)
+assert found == ["C:/p/web/db.php", "C:/p/bot/.env", "C:/p/bot/.env.local", "C:/p/keys/server.pem",
+                 "C:/p/docs/SA_PASSWORD.txt", "C:/p/ssh/id_rsa", "C:/p/web/app.key"], found
+rules = hub.gemini_settings(["MEM", None], found[:1], ["read_file(X/)"])["permissions"]
+assert rules["allow"] == ["read_file(MEM/)"]
+assert rules["deny"] == ["write_file(*)", "command(*)", "read_file(C:/p/web/db.php)", "read_file(X/)"]
 assert agy[agy.index("--model") + 1] == "m"
 assert "EXTRA" in hub.command_for("gemini", {"write": False}, False, "dir/report.md", None, ["EXTRA"])
 assert "--conversation" in hub.command_for("gemini", read_task, True, "dir/report.md")
