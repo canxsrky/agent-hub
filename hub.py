@@ -241,6 +241,13 @@ def holds_secret(root, name):
         return False
 
 
+def codex_profile(workspace, write, secrets):
+    """TOML inline table: read everything, write the workspace if asked, deny each secret."""
+    entries = {":root": "read", Path(workspace).as_posix(): "write" if write else "read"}
+    entries.update({path: "deny" for path in secrets})
+    return "{" + ",".join(f"{json.dumps(key)}={json.dumps(value)}" for key, value in entries.items()) + "}"
+
+
 def touched_secrets(secrets, log):
     """Codex read-only can read the whole disk here, so report it if a secret path shows up in its log."""
     text = log.replace("\\\\", "/").replace("\\", "/").lower()
@@ -264,6 +271,11 @@ def command_for(agent, task, resumed, report, memory=None, read_dirs=()):
             settings += ["-c", f"model_reasoning_effort={effort}"]
         for override in task.get("codex_config", []):
             settings += ["-c", override]
+        if task.get("codex_profile"):
+            # A permission profile can deny reads, but only with the elevated or mxc Windows sandbox.
+            settings += ["-c", 'default_permissions="hub"', "-c", "permissions.hub.filesystem=" + task["codex_profile"]]
+            verb = ["codex", "exec", "resume", task["session"]] if resumed else ["codex", "exec"]
+            return [*verb, *settings, "-"]
         sandbox = "workspace-write" if task["write"] else "read-only"
         if resumed:
             return ["codex", "exec", "resume", task["session"], *settings,
@@ -404,6 +416,8 @@ def run(args):
     if agent == "gemini":
         settings = gemini_settings([task_dir, memory, *read_dirs], secrets, task.get("gemini_deny", []))
         (task_dir / "agy-settings.json").write_text(json.dumps(settings, indent=1), encoding="utf-8")
+    elif CONFIG.get("codex", {}).get("deny_reads"):
+        task["codex_profile"] = codex_profile(workspace, task["write"], secrets)
     code = execute(command_for(agent, task, resumed, report, memory, read_dirs),
                    prompt if agent == "codex" else "", workspace, stdout_path, stderr_path, args.timeout)
     task["seconds"] = round(time.time() - started)

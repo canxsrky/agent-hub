@@ -61,6 +61,14 @@ with tempfile.TemporaryDirectory() as folder:
     assert not hub.holds_secret(folder, "code.py")
     assert not hub.holds_secret(folder, "missing.ini")
 
+profile = hub.codex_profile("C:\\w", True, ["C:/p/.env"])
+assert profile == '{":root"="read","C:/w"="write","C:/p/.env"="deny"}', profile
+assert '"C:/w"="read"' in hub.codex_profile("C:\\w", False, [])
+guarded = hub.command_for("codex", {**read_task, "codex_profile": profile}, False, "r")
+assert "--sandbox" not in guarded and 'default_permissions="hub"' in guarded and "permissions.hub.filesystem=" + profile in guarded
+assert guarded[:4] != ["codex", "exec", "resume", "s"]
+assert hub.command_for("codex", {**read_task, "codex_profile": profile}, True, "r")[:4] == ["codex", "exec", "resume", "s"]
+
 log = r'{"command":"Get-Content C:\\P\\bot\\.env"}'
 assert hub.touched_secrets(["C:/p/bot/.env", "C:/p/other.pem"], log) == ["C:/p/bot/.env"]
 assert "Never open" in hub.build_prompt("t", "codex", False, "W", "c", "B", {"secrets": ["S"]}, "", "", False)

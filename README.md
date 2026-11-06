@@ -97,6 +97,7 @@ Optional. Without a config, the hub uses the current git repository and each CLI
 | `read_dirs` | Extra folders outside the project that Gemini may read |
 | `limits` | Extra hard limits for your project |
 | `codex.model`, `codex.effort`, `codex.config` | Codex defaults. `config` holds `-c` overrides |
+| `codex.deny_reads` | `true` blocks secret files for Codex too. Needs the `elevated` or `mxc` Windows sandbox, or macOS/Linux |
 | `gemini.model`, `gemini.effort` | `agy` defaults. List models with `agy models` |
 | `gemini.deny` | Extra `agy` rules, such as `read_file(/path/to/private/)` |
 
@@ -129,11 +130,11 @@ Agents see committed code only, so commit first or pass `--base <branch>`. Each 
 | Agent | How secrets are protected | Strength |
 |---|---|---|
 | Gemini | `agy` denies the exact paths | Enforced for file reads |
-| Codex | The list goes into the task as a hard limit, and the hub warns if a listed path appears in the agent's log | Instruction plus audit, not enforcement |
+| Codex | With `codex.deny_reads`: a Codex permission profile denies the exact paths. Always: the list goes into the task, and the hub warns if a listed path appears in the agent's log | Enforced with `deny_reads`; otherwise instruction plus audit |
 
-Codex can enforce denied read paths through permission profiles, but only with its `mxc` or `elevated` Windows sandbox. `mxc` is not available on Windows Server, and the `unelevated` sandbox does not support denied reads. Git-ignored secrets are not in Codex's workspace, so it only meets them by leaving it.
+On Windows, `deny_reads` needs the `elevated` sandbox, because the default `unelevated` one cannot deny reads and `mxc` is missing on Windows Server. Set it with `"config": ["windows.sandbox=\"elevated\""]`. Codex's one-time elevated setup adds two local sandbox users and firewall rules.
 
-**What we tested:** Codex shell commands could not write in read-only mode, and could not write outside the workspace in `--write` mode. Gemini could not create files or run commands, and could not read decoy `.env`, `.pem`, password or scanned config files, while it read an ordinary file beside them. Codex declined a listed file when asked to read it.
+**What we tested:** Codex shell commands could not write in read-only mode, and could not write outside the workspace in `--write` mode. Gemini could not create files or run commands, and could not read decoy `.env`, `.pem`, password or scanned config files, while it read an ordinary file beside them. With `deny_reads` and the `elevated` sandbox, Codex shell commands read an ordinary file but got `PermissionDenied` on a decoy `.env`, and could not write outside its workspace.
 
 **What we did not test:** Gemini's `grep_search` was never actually run: the model reported it as unavailable and its shell search was blocked, so we cannot say it respects the block. Secrets inside source code and scripts are not scanned. Codex's sandbox was not tested against services, databases or network access. The `limits` setting is an instruction to the agent, not enforcement. On a machine that matters, keep reviewing the results.
 

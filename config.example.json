@@ -9,7 +9,8 @@
   "codex": {
     "model": "your-codex-model",
     "effort": "high",
-    "config": []
+    "config": [],
+    "deny_reads": false
   },
   "gemini": {
     "model": "your-agy-model"
